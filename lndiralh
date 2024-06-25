@@ -1,0 +1,1825 @@
+#!/usr/bin/perl
+
+use strict;
+use feature 'unicode_strings';
+use open ':std',':encoding(UTF-8)';
+use utf8;
+
+# Standard way of invoking system commands
+
+
+
+
+# The standard File::Basename does not care whether the file name ends with a "/". This makes sure basename() always returns a valid name.
+
+use Cwd; # cwd()
+use File::Basename;
+
+package main;
+
+# ALHTODO alhideas1 01/01/13 20:10:02 needs "use Term::ANSIColor qw(:constants);" as well
+
+# Available colors:
+# [[http://search.cpan.org/~rra/Term-ANSIColor-3.01/ANSIColor.pm]] (but bright_* colors do not work on terminator)
+
+
+sub iscolor{
+  # color coding on color terminals
+  my $iscolor=0;
+  if(defined $ENV{TERM}){
+    $iscolor=1 if ($ENV{TERM}=~/^xterm/
+		   || $ENV{TERM}=~/^rxvt/
+		   || $ENV{TERM}=~/^eterm/ # used with M-x term and term-ansi in emacs (but does not work at the moment?!)
+		   || $ENV{TERM} eq "linux"
+		   || $ENV{TERM} eq "screen"
+		   || $ENV{TERM} eq "cygwin");
+  }
+  return $iscolor;
+}
+
+# <<settermname>>= [[file:../1dex.org::settermname][(i)]] - change window name for this terminal.  [[http://mailman.lug.org.uk/pipermail/lancaster/2003-June/000033.htmlxs]]
+sub settermname{
+  my($name)=@_;
+  print chr(27)."]0;$name".chr(7);
+}
+
+
+use Term::ANSIColor qw(:constants);
+use POSIX;
+
+# <<debugflags>> [[file:../1dex.org::debugflags][(i)]] Currently active debug flags
+
+my %debugflags;
+
+# <<logtrace>> always store a copy of all the messages in a log to keep a trace when the screen log cannot be accessed
+
+sub logtrace{
+  my($m)=@_;
+  my $logfile="$ENV{HOME}/log/trace.".POSIX::strftime("%y%m%d",localtime(time));
+  open LOG,">>$logfile" or print STDERR "COULD NOT RECORD LOG FILE\n";
+  print LOG POSIX::strftime("%y-%m-%d %H:%M:%S",localtime(time))." $m\n";
+  close LOG;
+}
+
+# use STDERR because scripts may be judged on what they print on STDOUT
+
+# basic <<trace>>= [[file:../1dex.org::trace][(i)]] $flags is a comma-separated list of flags that will be compared to [[debugflags]]
+
+sub trace{
+  my ($msg,$flags,$outfile)=@_;
+  $msg='ok' unless defined $msg;
+  $flags='' unless defined $flags;
+  die "$outfile obsolete, replaced by log" if defined $outfile;
+  
+  # Activate trace if one of the flags corresponds to one in [[debugflags]], which can be set by hand or with ALHDEBUG
+
+  my $doit='';
+  if(exists $debugflags{ALL}){$doit='ALL'}
+  elsif(exists $ENV{ALHDEBUG} && $ENV{ALHDEBUG}=~/(^|,)yes(,|$)/){$doit='yes'} # ALH 26/04/24 ALHDEBUG=yes is old API
+  elsif(exists $ENV{ALHDEBUG} && $ENV{ALHDEBUG}=~/(^|,)ALL(,|$)/){$doit='ALL'}
+  elsif($parm::opts{vvv}){$doit='vvv'} # cf [[file:parm.ph::vvv]] -vvv displays all messages
+  elsif($parm::opts{vv} && $flags eq ''){$doit='vv'} # cf [[file:parm.ph::vv]] -vv displays all untagged messages
+  elsif(exists $ENV{ALHDEBUG} && $ENV{ALHDEBUG}=~/(^|,)VV(,|$)/ && $flags eq ''){$doit='VV'}
+  elsif($flags=~/^1$/){$doit='old'} # ALH 26/04/24 $flags=0|1 is old API
+  else{
+    foreach(split(/,/,$flags)){
+      if(exists $debugflags{$_}){
+	$doit=$_;
+	last;
+      }
+    }
+
+    if($doit eq ''){
+      if(exists $ENV{ALHDEBUG}){
+	foreach my $req(split(/,/,$ENV{ALHDEBUG})){
+	  if($flags=~/(^|,)$req(,|$)/){
+	    $doit=$req;
+	    last;
+	  }
+	}
+      }
+    }
+  }
+  
+  return if $doit eq '';
+
+  my ($package,$file,$line)=caller;
+
+  # terminal characters can be green or white, so choose something else. BRIGHT_GREEN is not available on MacOS.
+
+  my $m="$file:$line: ($doit) $msg";
+  print STDERR GREEN if iscolor();
+  print STDERR "$m\n";
+  print STDERR RESET if iscolor();
+
+  logtrace($m);
+}
+
+# <<message>> basic informational message
+
+sub message{
+  my ($msg)=@_;
+  my($package,$file,$line)=caller;
+  sysmsg2($file,$line,$msg,0,0); # [[sysmsg2]]
+}
+
+# a positive informational message
+
+sub happy{
+  my ($msg)=@_;
+  my($package,$file,$line)=caller;
+  sysmsg2($file,$line,$msg,2,0); # [[sysmsg2]]
+}
+
+# <<warning>> [[file:../1dex.org::warning][(i)]] basic nonblocking error
+
+sub warning{
+  my ($msg)=@_;
+  my($package,$file,$line)=caller;
+  sysmsg2($file,$line,$msg,1,0); # [[sysmsg2]]
+}
+
+# <<crash>>= [[file:../1dex.org::crash][(i)]] basic blocking error
+
+sub crash{
+  my ($msg)=@_;
+  my($package,$file,$line)=caller;
+  sysmsg2($file,$line,$msg,1,1); # [[sysmsg2]]
+}
+
+# <<sysmsg2>> [[file:../1dex.org::sysmsg2][(i)]] simple formatting for messages. $file and $line are parameters because they refer to the original caller, not the
+# intermediate caller.
+
+sub sysmsg2{
+  my($file,$line,$msg,$meaning,$die)=@_;
+
+  if(iscolor()){
+
+    # standard level (no problem, no happy solution). Do not use blue because difficult to read on a dark/transparent background when not
+    # bold. Blue only works on larger surfaces so it should only be used as bold or as a background.
+    
+    print STDERR GREEN if $meaning==0;
+
+    # warnings and errors
+    
+    if($meaning==1){
+
+      # Error
+      if($die==1){
+	print STDERR BOLD MAGENTA; # RED does not work in BOLD?
+      }
+
+      # Warning
+      else{
+	print STDERR BOLD YELLOW; # orange does not exist
+      }
+    }
+
+    # happy messages.  Terminal characters can be green or white, so choose something else.
+    
+    if($meaning==2){
+      print STDERR BOLD BLUE;
+    }
+  }
+  
+  my $m=sysmsgstring($file,$line,$msg, # [[sysmsgstring]]
+
+		     # Do not display location for happy messages (to avoid mixing with errors in emacs compilation mode)
+		     $meaning==2?0:$die);
+  
+  print STDERR "$m\n";
+  print STDERR RESET if iscolor();
+
+  logtrace($m);
+  
+  if($die==1){
+    if(defined $ENV{ALHDEBUG}){Carp::cluck("stack trace");}
+    exit(1);
+  }
+}
+
+# <<sysmsgstring>> [[file:../1dex.org::sysmsgstring][(i)]]
+
+sub sysmsgstring{
+  my ($file,$line,$msg,$fullloc)=@_;
+
+  # reduce unnecessary clutter
+  my $homeqm=quotemeta($ENV{HOME});
+  $file="~/$1" if($file=~/^$homeqm\/(.*)$/);
+
+  # format "$file:$line:" is understood by the emacs compilation mode
+  my $location='';
+  if(defined $ENV{ALHDEBUG}
+
+     # Do not print location inside emacs for happy messages, to avoid mixing up with compilation errors
+     
+     || (defined $ENV{INSIDE_EMACS} && defined $fullloc && $fullloc==1)
+     
+     || (defined $fullloc && $fullloc==1)){
+    
+    $location="$file:$line: ($ENV{USER}\@$ENV{HOSTNAME}) ";
+  }
+  return "$location$msg";
+}
+
+
+
+# <<CleanPath>> [[file:../1dex.org::CleanPath][(i)]] Cleans up all noise from a path name
+sub CleanPath{
+  my ($path) = @_;
+
+  # "./" means nothing
+  # and "//.../" means nothing (at least in perl)
+  my @path = split /\//,$path;
+  if (@path >= 1) {
+    # Don't forget leading "/"!
+    $path = "";
+    $path = "/" if $path[0] eq "";
+
+    # Perl/Unix requires this $i to be defined outside the loop!
+    # (don't ask me why...)
+    my $i = 0;
+    for ($i = 0;$i < @path;$i++) {
+      if ($path[$i] ne '.' && $path[$i] ne "") {
+	if ($path eq "") {
+	  $path = $path[$i];
+	} elsif ($path eq "/") {
+	  $path = $path . $path[$i];
+	} else {
+	  $path = $path . "/" . $path[$i];
+	}
+      }
+    }
+  }
+  return $path;
+}
+
+# Removes all occurences of "x/.." in a directory. This is not something to do when symbolic links are involved!
+
+# ALHTODO alhideas1 09/02/13 12:13:28 check file names with chdir and pwd in that case.
+
+sub CleanDotDot{
+  my ($dir) = @_;
+  while($dir =~ s/\w+\/\.\.\///){}
+  return $dir;
+}
+
+# <<GetDirName>> [[file:../1dex.org::GetDirName][(i)]]
+
+sub GetDirName{
+  trace("GetDirName called for '$_[0]'");
+  return dirname(CleanPath($_[0]));
+}
+
+# <<GetBaseName>> [[file:../1dex.org::GetBaseName][(i)]]
+sub GetBaseName{
+  return basename(CleanPath($_[0]));
+}
+
+sub GetBaseNoExt{
+  my($name)=@_;
+  my $base=GetBaseName($name);
+  $base=~/^(.*)\.[^.]+$/ or die "no dot in '$base'";
+  return $1;
+}
+
+# <<MakePath>>= [[file:../1dex.org::MakePath][(i)]]
+
+sub MakePath{
+  my ($dir,$name) = @_;
+  return CleanPath($dir . "/" . $name) if $dir ne "";
+  return CleanPath($name) if $dir eq "";
+  die "MakePath error";
+}
+
+# <<FullPath>>= [[file:../1dex.org::FullPath][(i)]] Guesses full path from cwd and relative path (given as parameter). Does not use Cwd::abs_path() which tries to cd to
+# given directory name.
+
+sub FullPath{
+  my ($object,$dir)=@_;
+  die "undefined object" unless defined $object;
+  $dir=cwd() unless defined $dir;
+  
+  # Recognises absolute paths
+  my $path;
+  if ($object=~/^\// || $object=~/^.:\//){$path=$object}
+  else{$path=MakePath($dir,$object)} # [[MakePath]]
+
+  return CleanPath($path);
+}
+
+# <<CompPath>> [[file:../1dex.org::CompPath][(i)]] Finds differences between two paths. Any comparison gives a common begining, a separate middle, and a common end.
+
+sub CompPath{
+  my ($Path1,$Path2) = @_;
+
+  # Separate into path bits
+  my @Path1 = split /\//,$Path1;
+  my @Path2 = split /\//,$Path2;
+
+  # Get common beginning, remember last common bit
+  my $i = 0;
+  my $ok = 1;
+  my $beg = "";
+  while ($ok) {
+    $ok = $i < @Path1 && $i < @Path2;
+    $ok = $Path1[$i] eq $Path2[$i] if $ok;
+    $beg = $beg . $Path1[$i] . "/" if $ok;
+    $i++ if $ok;
+  }
+  my $Start = $i;
+
+  # Get common end
+  $i = 0;
+  $ok = 1;
+  my $end = "";
+  while ($ok) {
+    $ok = $i < @Path1 && $i < @Path2;
+    $ok = $Path1[@Path1 - $i - 1] eq $Path2[@Path2 - $i - 1] if $ok;
+    $end = "/" . $Path1[@Path1 - $i - 1] . $end if $ok;
+    $i++ if $ok;
+  }
+  my $Stop = $i;
+
+  # Get separate middles
+  my ($mid1,$mid2) = ("","");
+  for ($i = $Start;$i < @Path1 - $Stop;$i++) {
+    if ($i == $Start) {
+      $mid1 = $Path1[$i];
+    } else {
+      $mid1 = $mid1 . "/" . $Path1[$i];
+    }
+  }
+  for ($i = $Start;$i < @Path2 - $Stop;$i++) {
+    if ($i == $Start) {
+      $mid2 = $Path2[$i];
+    } else {
+      $mid2 = $mid2 . "/" . $Path2[$i];
+    }
+  }
+
+  # Return result
+  return ($beg,$mid1,$mid2,$end);
+}
+
+# <<is_folder_empty>> https://stackoverflow.com/questions/4493482/detect-empty-directory-with-perl
+
+sub is_folder_empty {
+  my $dirname = shift;
+
+  # also returns true if directory does NOT exist
+  return 1 unless -d $dirname;
+  
+  opendir(my $dh, $dirname) or die "Not a directory";
+  return scalar(grep { $_ ne "." && $_ ne ".." } readdir($dh)) == 0;
+}
+
+# <<formathomes>> [[file:../1dex.org::formathomes][(i)]]
+
+sub formathomes{
+  my($cmd)=@_;
+
+  # use '~' as much as possible to reuse commands from different homes.
+
+  my $homeqm=quotemeta($ENV{HOME});
+  $cmd=~s/$homeqm/~/g;
+
+  return $cmd;
+}
+
+sub fullformat{
+  return formathomes(FullPath(@_));
+}
+
+sub unformathomes{
+  my($cmd)=@_;
+  $cmd=~s/~/$ENV{HOME}/g;
+  return $cmd;
+}
+
+# <<bottomdir>>= [[file:../1dex.org::bottomdir][(i)]] extract one directory level
+sub bottomdir{
+  my($f)=@_;
+  my $d=GetDirName($f);
+  trace("dir name is '$d'");
+  if($d!~/\/?([^\/]+)\/?$/){main::crash("no bottom dir name")}
+  trace("bottom dir name is '$1'");
+  return $1;
+}
+
+# <<randtag>> create a pseudo-unique file tag
+
+sub randtag{
+  my @chars;
+  foreach(ord('a')..ord('z')){push @chars,chr($_)}
+  foreach(ord('0')..ord('9')){push @chars,chr($_)}
+
+  # Do not use '%' because some software (eg anki) then try to convert it from HTML character codes
+  my $r='@';
+  
+  foreach(1..3){$r.=$chars[rand($#chars+1)]}
+
+  return $r;
+}
+
+
+
+use POSIX;
+
+# Standard way of invoking system commands
+
+
+package optcheck;
+
+sub optcheck{
+  my($opts,%default)=@_;
+  my($package,$file,$line)=caller;
+
+  # check that all given options exist
+  foreach(keys %$opts){
+    main::crash("$file($line):wrong option '$_'") unless defined $default{$_};
+  }
+
+  # default values
+  foreach(keys %default){
+    $opts->{$_}=$default{$_} unless defined $opts->{$_};
+  }
+}
+
+
+
+package timealh;
+use File::stat;
+
+# <<now2int>> [[file:../1dex.org::now2int][(i)]]
+sub now2int{return time()}
+
+# time structure indices (see [[man:POSIX]], [[man:mktime]], [[man:perlfunc]])
+our $Isec=0;
+our $Imin=1;
+our $Ihour=2;
+our $Imday=3;
+our $Imonth=4;
+our $Iyear=5;
+our $Iwday=6;
+our $Iyday=7;
+our $Iisdst=8;
+
+# initialize a time structure with the current time to get default values
+sub now2array{return localtime(time)}
+
+# <<array2int>> [[file:../1dex.org::array2int][(i)]] int=integer time, UTC reference (can be compared to time())
+sub array2int{return POSIX::mktime(@_)} # [[man:mktime]]
+
+# <<gmarray2int>> [[file:../1dex.org::gmarray2int][(i)]] Create int time from GM time array
+
+sub gmarray2int{
+  my $t=POSIX::mktime(@_);
+  return $t+POSIX::mktime(localtime($t))-POSIX::mktime(gmtime($t));
+}
+
+# <<int2array>>
+
+sub int2array{
+  my($t)=@_;
+  return localtime($t); # [[man:localtime]]
+}
+
+# <<int2gmarray>> gmtime() always takes an int and returns an array
+
+sub int2gmarray{
+  my($t)=@_;
+  return gmtime($t);
+}
+
+# set the time to midnight
+sub array2midnight{
+  $_[$Ihour]=0;
+  $_[$Imin]=0;
+  $_[$Isec]=0;
+  return @_;
+}
+
+# readableint=integer time, local time reference, humanly readable (but no operations possible except integer comparisons)
+
+sub array2readableint{
+  my ($sec,$min,$hour,$mday,$month,$year,$wday,$yday,$isdst)=@_;
+  return sprintf("%02d%02d%02d%02d%02d%02d",$year-100,$month+1,$mday,$hour,$min,$sec);
+}
+
+sub array2time{
+  my ($sec,$min,$hour,$mday,$month,$year,$wday,$yday,$isdst)=@_;
+  return sprintf("%02d%02d%02d",$hour,$min,$sec);
+}
+
+# <<array2date>> [[file:../1dex.org::array2date][(i)]]
+
+sub array2date{
+  my ($sec,$min,$hour,$mday,$month,$year,$wday,$yday,$isdst)=@_;
+  return sprintf("%04d%02d%02d",$year+1900,$month+1,$mday);
+}
+
+sub array2sec{return $_[$Isec]}
+sub array2min{return $_[$Imin]}
+sub array2hour{return $_[$Ihour]}
+sub array2dechour{return $_[$Ihour]+$_[$Imin]/60}
+sub array2mday{return $_[$Imday]}
+sub array2month{return $_[$Imonth]+1}
+sub array2year{return $_[$Iyear]-100}
+sub array2wday{return $_[$Iwday]} # <<array2wday>>
+sub array2yday{return $_[$Iyday]}
+sub array2isdst{return $_[$Iisdst]}
+
+# <<readableint2array>> [[file:../1dex.org::readableint2array][(i)]]
+
+sub readableint2array{
+  my($i)=@_;
+  my @t=now2array();
+  unless($i=~/^([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{2})([0-9]{2})$/){
+
+    # stack trace
+    Carp::cluck("$i is not in 'readableint' format");
+    die;
+  }
+
+  # Years between 70 and 99 are considered to be in the 20th century
+  if($1>=70){$t[$Iyear]=$1}
+  else{$t[$Iyear]=$1+100}
+  
+  $t[$Imonth]=$2-1;
+  $t[$Imday]=$3;
+  $t[$Ihour]=$4;
+  $t[$Imin]=$5;
+  $t[$Isec]=$6;
+
+  # "man mktime" says "A flag that indicates whether daylight saving time is in effect at the time described.  The value is positive if
+  # daylight saving time is in effect, zero if it is not, and negative if the information is not available".
+
+  $t[$Iisdst]=-1;
+
+  # ALHTODO alhideas1 31/03/14 16:43:15 need to convert time back and forth to reset unknown fields like wday (with
+  # "int2array(array2int(@t))"?)
+  
+  return @t;
+}
+
+# <<int2sexa>> [[file:../1dex.org::int2sexa][(i)]] mencoder-readable format (mencoder can also read seconds, but it is more difficult to read and debug)
+
+sub int2sexa{
+  my($i,%opts)=@_;
+  optcheck::optcheck(\%opts,showseconds=>1);
+
+  # final result
+  my $r='';
+
+  # .01 seconds
+  if($i-int($i)!=0){
+    $r=sprintf(".%02i",$i-int($i)) if $opts{showseconds};
+    $i=int($i);
+  }
+
+  # seconds
+  my $s=$i%60;
+  $i-=$s;$i/=60;
+  $r=sprintf(":%02i",$s).$r if $opts{showseconds};
+
+  # minutes
+  my $m=$i%60;
+  $i-=$m;$i/=60;
+  $r=sprintf("%02i",$m).$r;
+  return $r if $i<1 && $opts{showseconds};
+
+  # hours
+  my $h=$i%24;
+  $i-=$h;$i/=24;
+  $r=sprintf("%02i:",$h).$r;
+  return $r if $i<1;
+
+  # days
+  $r=sprintf("%02i-",$i).$r;
+  return $r;
+}
+
+# sexa format is "[[dd-]hh:]mm:ss[.cc]"
+sub sexa2int{
+  my($i)=@_;
+  return ((($1*24)+$2)*60+$3)*60+$4 if $i=~/^(\d+)-(\d+):(\d+):(\d+)$/;
+  return ($1*60+$2)*60+$3 if $i=~/^(\d+):(\d+):(\d+)$/;
+  return $1*60+$2+$4/100 if $i=~/^(\d+):(\d+)(\.(\d+))?$/;
+  die;
+}
+
+# this only converts each field from the array into pieces of string. if an array item is wrong (eg the name of the day), the wrong value is
+# used.
+
+sub array2ascii{
+  my $a=POSIX::asctime(@_);
+  chomp $a;
+  return $a;
+}
+
+# <<array2strftime>> [[file:../1dex.org::array2strftime][(i)]] example of call: timealh::array2strftime("%d/%m/%y",@day)
+
+sub array2strftime{
+  my $r=POSIX::strftime(@_); # [[man:strftime]]
+  return $r;
+}
+
+# Returns CET (winter) or CST (summer) in Central Europe
+
+sub timezone{return now2strftime("%Z")}
+
+# <<date2array>> [[file:../1dex.org::date2array][(i)]] Build an array from a date specification (no hour)
+
+sub date2array{
+  my($day,$month,$year)=@_;
+  if(!defined $day){main::crash("day not defined")}
+  if(!defined $month){main::crash("month not defined")}
+  if(!defined $year){main::crash("year not defined")}
+  
+  my @out=now2array(); 
+  $out[$Isec]=0;
+  $out[$Imin]=0;
+  $out[$Ihour]=0;
+
+  if($day<1 || $day>31){main::crash("bad day $day")}
+  $out[$Imday]=$day;
+
+  if($month<1 || $month>12){main::crash("bad month $month")}
+  $out[$Imonth]=$month-1;
+  
+  if($year>1900){$out[$Iyear]=$year-1900}
+  else{
+    if($year<=0 || $year>99){main::crash("bad year $year")}
+    $out[$Iyear]=$year+100;
+  }
+  
+  return @out;
+}
+
+# read dates in loose formats (result can be approximate!)
+
+sub string2array{
+  my($in)=@_;
+
+  # regular time followed by a time zone.
+
+  # ALHTODO alhideas1 26/12/09 17:57:56 take time zone into account
+
+  if($in=~/^(19|20)?([0-9]{12}) [+-][0-9]{4}$/){return readableint2array($2)}
+
+  my @out=now2array();
+
+  # month
+  my $textmonth;
+  if($in=~/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/){
+    $textmonth=$1;
+    $out[$Imonth]=0 if $textmonth eq "Jan";
+    $out[$Imonth]=1 if $textmonth eq "Feb";
+    $out[$Imonth]=2 if $textmonth eq "Mar";
+    $out[$Imonth]=3 if $textmonth eq "Apr";
+    $out[$Imonth]=4 if $textmonth eq "May";
+    $out[$Imonth]=5 if $textmonth eq "Jun";
+    $out[$Imonth]=6 if $textmonth eq "Jul";
+    $out[$Imonth]=7 if $textmonth eq "Aug";
+    $out[$Imonth]=8 if $textmonth eq "Sep";
+    $out[$Imonth]=9 if $textmonth eq "Oct";
+    $out[$Imonth]=10 if $textmonth eq "Nov";
+    $out[$Imonth]=11 if $textmonth eq "Dec";
+  }
+
+  # day of month
+
+  if($in=~/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b\s+$textmonth\s+([0-9]{1,2})\s+/){
+    $out[$Imday]=$2;
+  }
+
+  if($in=~/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+([0-9]{1,2})\s+$textmonth\b/){
+    $out[$Imday]=$2;
+  }
+
+  # year
+  if($in=~/\s+(20[0-9]{2})\s+/){
+    $out[$Iyear]=$1-1900;
+  }
+
+  # time
+  if($in=~/([0-9]{2}):([0-9]{2}):([0-9]{2})/){
+    $out[$Ihour]=$1;
+    $out[$Imin]=$2;
+    $out[$Isec]=$3;
+  }
+
+  # timezone
+  if($in=~/ ([-+])([01]\d)(00|30)/){
+    my $sign=1;
+    my $hours=$2;
+    my $mins=$3;
+    $sign=-1 if $1 eq '-';
+    my $out=array2int(@out);
+
+    # add one or hours to @out to represent the fact that we are in the CEST timezone at +0200
+
+    if(timezone() eq 'CET'){$out+=60*60}
+    else{$out+=2*60*60}
+
+    $out-=$sign*$hours*60*60;
+    $out-=$sign*$mins*60;
+    @out=int2array($out);
+  }
+
+  return @out;
+}
+
+sub exitafter{
+  my($after)=@_;
+  if($after!=0 && time>readableint2int($after)){
+    print "timealh::exitafter: $after passed, exiting...\n";
+    exit 0;
+  }
+}
+
+# <<file2int>> [[file:../1dex.org::file2int][(i)]]
+sub file2int{
+  my($file)=@_;
+
+  # Also deal with symlinks which point to nowhere
+  die "$file not found" unless -e $file || -l $file;
+
+  # In the case of symlinks, return the time of the symlink rather than the file it points to (and which may not exist)
+  my $st;
+  if(-l $file){$st=lstat($file)}
+  else{$st=stat($file)}
+
+  return $st->mtime;
+}
+
+# <<array_round_week>> [[file:../1dex.org::array_round_week][(i)]]
+sub array_round_week{
+  my @t=@_;
+  $t[$Ihour]=0;
+  $t[$Imin]=0;
+  $t[$Isec]=0;
+  if($t[$Iwday]>0){$t[$Imday]-=$t[$Iwday]-1}
+  else{$t[$Imday]-=6}
+  return @t;
+}
+
+sub int2weekday{
+  my ($t,$d)=@_;
+  my $r=int_round_week($t)+$d*24*60*60; # [[int_round_week]]
+  if($r<$t){$r+=7*24*60*60}
+  return $r;
+}
+
+sub int2monday{
+  my($t)=@_;
+  return int2weekday($t,0);
+}
+
+sub int2tuesday{
+  my($t)=@_;
+  return int2weekday($t,1);
+}
+
+sub int2wednesday{
+  my($t)=@_;
+  return int2weekday($t,2);
+}
+
+sub int2thursday{
+  my($t)=@_;
+  return int2weekday($t,3);
+}
+
+sub int2friday{
+  my($t)=@_;
+  return int2weekday($t,4);
+}
+
+sub int2saturday{
+  my($t)=@_;
+  return int2weekday($t,5);
+}
+
+sub int2sunday{
+  my($t)=@_;
+  return int2weekday($t,6);
+}
+
+sub array_round_day{
+  my @t=@_;
+  $t[$Ihour]=0;
+  $t[$Imin]=0;
+  $t[$Isec]=0;
+  return @t;
+}
+
+sub array_round_hour{
+  my @t=@_;
+  $t[$Imin]=0;
+  $t[$Isec]=0;
+  return @t;
+}
+
+sub readableint2mday{
+  my($t)=@_;
+  my @t=readableint2array($t);
+  return $t[$Imday];
+}
+
+# composed calls
+# --------------
+
+sub int2ascii{return array2ascii(int2array(@_))} # [[int2array]]
+
+sub int2readableint{return array2readableint(int2array(@_))}
+sub string2int{return array2int(string2array(@_))} # [[string2array]]
+
+# <<readableint2int>> [[file:../1dex.org::readableint2int][(i)]]
+sub readableint2int{return array2int(readableint2array(@_))} # [[readableint2array]]
+
+# <<readableint2ascii>> [[file:../1dex.org::readableint2ascii][(i)]] [[array2ascii]] [[readableint2array]]
+sub readableint2ascii{return array2ascii(readableint2array(@_))}
+
+# <<now2readableint>> [[file:../1dex.org::now2readableint][(i)]]
+sub now2readableint{return int2readableint(time)}
+
+# just a readable and sortable date (no time), especially useful to name log files!
+
+sub readableintdate{return substr(now2readableint(),0,6)}
+
+# <<int2strftime>> [[file:../1dex.org::int2strftime][(i)]]
+
+sub int2strftime{
+  my($format,$int)=@_;
+  return array2strftime($format,int2array($int)); # [[array2strftime]] [[int2array]]
+}
+
+# <<now2strftime>> [[file:../1dex.org::now2strftime][(i)]]
+
+sub now2strftime{
+  my($format)=@_;
+  return array2strftime($format,now2array()); # [[array2strftime]]
+}
+
+# <<readableint2strftime>> [[file:../1dex.org::readableint2strftime][(i)]] [[array2strftime]] [[readableint2array]]
+
+sub readableint2strftime{
+  my($format,$int)=@_;
+  return array2strftime($format,readableint2array($int));
+}
+
+# <<delay2sexa>>= [[file:../1dex.org::delay2sexa][(i)]] convert delay in seconds to hexadecimal representation
+sub delay2sexa{
+  my($delay,$withsec)=@_;
+
+  $withsec=1 unless defined $withsec;
+  
+  my $sign='';
+  if($delay<0){
+    $sign='-';
+    $delay=-$delay;
+  }
+  
+  my $r;
+
+  if($delay==0){return '0'}
+  
+  if($withsec){
+    if($delay%60!=0){$r=($delay%60).'"'}
+    $delay=int($delay/60);
+    if($delay==0){return $sign.$r}
+  }
+  else{
+    $delay=int($delay/60);
+  }
+  
+  if($delay%60!=0 || $r ne ''){$r=($delay%60)."'".$r}
+  $delay=int($delay/60);
+  if($delay==0){return $sign.$r}
+  
+  if($delay%24!=0 || $r ne ''){$r=($delay%24)."h".$r}
+  $delay=int($delay/24);
+  if($delay==0){return $sign.$r}
+			       
+  if($delay%30!=0 || $r ne ''){$r=($delay%30)."d".$r}
+  $delay=int($delay/30);
+  if($delay==0){return $sign.$r}
+			       
+  if($delay%12!=0 || $r ne ''){$r=($delay%12)."m".$r}
+  $delay=int($delay/12);
+  if($delay==0){return $sign.$r}
+			       
+  $r=$delay."y".$r;
+  
+  return $sign.$r;
+}
+
+# alphabetically sorted pure interfaces
+
+sub date2int{return array2int(date2array(@_))} # [[date2array]]
+sub datetag{return now2strftime("%y%m%d%H%M%S")}
+sub file2readableint{return int2readableint(file2int(@_))}
+sub file2strftime{return int2strftime($_[0],file2int($_[1]))}
+sub int2date{return array2date(int2array(@_))} # [[array2date]]
+sub int2hour{return array2hour(int2array(@_))} # [[array2hour]] [[int2array]]
+sub int2mday{return array2mday(int2array(@_))}
+sub int_round_day{return array2int(array_round_day(now2array))} # [[array_round_day]]
+sub int_round_week{return array2int(array_round_week(int2array(@_)))}
+sub nextweek{return array2int(array_round_week(now2array()))+7*24*60*60}
+sub now2ascii{return array2strftime("%c",now2array())} # [[array2strftime]]
+sub now2dechour{return array2dechour(now2array())}
+sub now2hour{return array2hour(now2array())}
+sub now2mday{return array2mday(now2array())}
+sub now2min{return array2min(now2array())}
+sub now2month{return array2month(now2array())}
+sub now2time{return array2time(now2array())}
+sub now2wday{return array2wday(now2array())} # <<now2wday>> [[array2wday]] [[now2array]]
+sub now2year{return array2year(now2array())}
+sub string2readableint{return int2readableint(string2int(@_))}
+sub thisweek{return array2int(array_round_week(now2array()))} # [[array_round_week]]
+sub timestamp{return array2readableint(now2array())}
+sub today{return array2int(array_round_day(now2array()))} # [[array_round_day]]
+sub tomorrow{return today()+24*60*60}
+sub yesterday{return today()-24*60*60}
+
+
+package main;
+
+sub DateTag{
+  return timealh::int2readableint(time);
+}
+
+sub Bakdate{
+
+    # Creates a date tag
+    my $DateTag = DateTag();
+
+    # Rename each of the input files with that prefix
+    my $file;
+    my @Bakdated = ();
+    for $file (@_){
+
+	# Get path component and file name component in $file;
+	my $dir = GetDirName($file);
+	my $name = GetBaseName($file);
+
+	# Adds prefix to file name and remembers new name
+	my $NewName = "$DateTag-$name";
+
+	# Checks that there is no file with the same name already.
+
+	if(-e "$dir/$NewName"){
+	    my $i = 2;
+	    while(-e "$dir/$DateTag-$i-$name"){
+		$i++;
+	    }
+	    $NewName = "$DateTag-$i-$name";
+	}
+
+	# Remembers new name
+
+	push @Bakdated,"$dir/$NewName";
+
+	# Changes file name on disk. Quotes names which can contain
+	# spaces.
+	system "mv \"$dir/$name\" \"$dir/$NewName\"";
+	die 'mv crashed' if $?;
+
+	# Verifies that file exists. If it's a link, the file the link
+        # points to does not have to exist.
+
+	die 'mv failed' if (! -e "$dir/$NewName" && ! -l "$dir/$NewName");
+    }
+    return @Bakdated;
+}
+
+
+
+package main;
+
+sub dirloc{
+
+  # The starting file and the base name of the directory to find.
+  my ($file,$base,%opts)=@_;
+  optcheck::optcheck(\%opts,
+
+		     # <<block>> [[file:../1dex.org::block][(i)]] crash if error
+		     block=>1,
+
+		     # <<top>> [[file:../1dex.org::top][(i)]] also test top path (not a good idea if looking for .Trash)
+		     top=>1
+		    );
+
+  # Full path for that file. [[file:path.ph::FullPath]]
+  my $path=FullPath($file);
+  trace("looking for '$base' in '$path'");
+  
+  # Looks for a directory in the hierarchy of directories containing this file, starting from the bottom. This way, a sub-directory can have
+  # its own version of a folder.
+
+  # If we are looking for a folder like .Trash, the base folder cannot be a starting point since it would be moved to itself!
+
+  if(!$opts{top} && $path=~/^(.*)\/[^\/]+\/?$/){$path=$1}
+
+  my $found="";
+  while ($found eq ""){
+    trace("checking for $path/$base");
+    $found="$path/$base" if -d "$path/$base";
+
+    if($path!~/^(.*)\/[^\/]+\/?$/){last}
+    $path=$1;
+  }
+
+  # A default folder for files in system or unknown directory structures.
+
+  if ($found eq "") {
+    $found="$ENV{HOME}/$base";
+    die "Default $found folder not found" unless -d $found || !$opts{block};
+  }
+
+  return $found;
+}
+
+
+use File::stat;
+
+
+# quote a list of arguments
+# version 2 added options, so the list of arguments needs to be a reference
+
+sub quotelist2{
+  my ($plist,%opts)=@_;
+  # quoteempty: adding quotes around empty list items
+  optcheck::optcheck(\%opts,quoteempty=>1);
+
+  my @r;
+  foreach(@$plist){push @r,quotestring($_,quoteempty=>$opts{quoteempty})}
+  return @r;
+}
+
+# <<quotestring>> [[file:../1dex.org::quotestring][(i)]] quote only one argument
+
+sub quotestring{
+  my ($parm,%opts)=@_;
+
+  # quoteempty: adding quotes around empty list items
+  optcheck::optcheck(\%opts,quoteempty=>0);
+
+  # if a parameter is empty, it is surrounded by quotes to avoid all shell metacharacters and options
+  $parm=~s/([-"'`\\ \$|<>;,&()*?\[\]#^+])/\\$1/g;
+
+  $parm="''" if($parm eq "" && $opts{quoteempty});
+  return $parm;
+}
+
+# <<html2utf8>> [[file:../1dex.org::html2utf8][(i)]] try to convert the HTML by hand because HTML::Strip and HTML::FormatText seem too complex for this simple task. Do minimal
+# changes to the html because transforming it has an impact on some of the UTF8 sequences (eg 'à' is \303\240, and \240 is probably a valid
+# \h or \v character).
+
+# ALHTODO alhideas1 14/07/09 11:05:32 find a better include .ph for this?
+
+# ALHTODO alhideas1 17/03/09 15:11:26 make it work under perl utf8 environment?
+
+sub html2utf8{
+  my ($text)=@_;
+  $text=~s/&#(\d+);/${\chr($1)}/g;
+  $text=~s/&(gt|rsaquo);/>/g; # rsaquo = right single angle quote (!?)
+  $text=~s/&acirc;/â/g;
+  $text=~s/&agrave;/à/g;
+  $text=~s/&amp;/&/g;
+  $text=~s/&auml;/ä/g;
+  $text=~s/&ccedil;/ç/g;
+  $text=~s/&eacute;/é/g;
+  $text=~s/&ecirc;/ê/g;
+  $text=~s/&egrave;/è/g;
+  $text=~s/&euml;/ë/g;
+  $text=~s/&euro;/€/g;
+  $text=~s/&hellip;/.../g;
+  $text=~s/&icirc;/î/g;
+  $text=~s/&iuml;/ï/g;
+  $text=~s/&laquo;/'/g;
+  $text=~s/&lt;/</g;
+  $text=~s/&nbsp;/ /g;
+  $text=~s/&ocirc;/ô/g;
+  $text=~s/&oelig;/œ/g;
+  $text=~s/&quot;/"/g;
+  $text=~s/&raquo;/'/g;
+  $text=~s/&rsquo;/'/g;
+  $text=~s/&times;/x/g;
+  $text=~s/&ucirc;/û/g;
+  $text=~s/&ugrave;/ù/g;
+  $text=~s/&uuml;/ü/g;
+  $text=~s/<br>\n/\n/g;
+  return $text;
+}
+
+
+
+package main;
+
+# <<BackupObject>> [[file:../1dex.org::BackupObject][(i)]] Moves one object
+# 0) object name
+# 1) backup directory name
+# 2) 1 = crush, 0 = move to backup directory
+sub BackupObject{
+  
+  # Get parameters
+  my ($object,$backup,$destroy) = @_;
+
+  # Checks that rubbish bin exists if it's needed
+  die "$backup does not exist" unless -d $backup || $destroy;
+
+  # Finds out complete path for display
+  my $path = FullPath($object);
+
+  # Some names are forbidden
+  my $base = GetBaseName($object);
+  if ($base eq "." || $base eq "..") {
+    warn ". and .. are not deleted";
+  } else {
+
+    # First displays file name, to know it if anything goes wrong
+    print STDERR $path . " ";
+
+    # Moves object to right place, that is .../Trash or infinity
+    if ($destroy) {
+
+      # rm -rf does not yell when an object to remove does not exist (at least in CYGWIN). So we need to check that first. No need to print
+      # the object name again in the error message, it's already on the screen.
+
+      # "-e" returns false for symbolic links that point to nowhere.
+
+      die "does not exist" if ! -e $object && ! -l $object;
+
+      # Quote names which may contain spaces. How to avoid calling built-in function under Win98?
+
+      system "rm -rf ".quotestring($object);
+      die "rm crashed" if $?;
+      print STDERR "DESTROYED\n";
+    } else {
+
+      # do not move things from Trash to Trash
+      if($path=~/\/\.Trash\//){
+	print STDERR "left there\n";
+	return;
+      }
+
+      # create subdirectories to limit file numbers in one directory
+      my $subdir=timealh::int2readableint(time);
+      system "mkdir -p $backup/$subdir" unless -d "$backup/$subdir";
+      crash("could not create '$backup/$subdir'") unless -d "$backup/$subdir";
+
+      # Quote names which may contain spaces
+
+      system "mv ".quotestring($object)." $backup/$subdir";
+      die "mv crashed" if $?;
+
+      # Changes the object date tag to make sure it's ordered by date deleted. Uses touch -m because touch alone does not work with
+      # directories under Windows. Do NOT use -m because it fails if we are not owner of the file (even if we can write it).
+
+      my $name = GetBaseName($object);
+      system "touch -c ".quotestring("$backup/$subdir/$name");
+      die "touch crashed" if $?;
+
+      # Gives the object a unique name
+      my @BakName = Bakdate("$backup/$subdir/" . $name);
+      print STDERR "saved in $backup\n";
+
+      # Remembers where the object was from. Need to keep the recover script in the same directory to delete everything at the same time in
+      # AccountCleanUp.
+      
+      system "mkdir $backup/$subdir/recover"
+	unless -d "$backup/$subdir/recover";
+      die if $?;
+      my $recover="$backup/$subdir/recover/".GetBaseName($BakName[0]).".pl";
+
+      open LOC,">$recover";
+      print LOC "#! /usr/bin/perl\n";
+      print LOC "require \'DelObj.ph\';\n";
+      print LOC "Recover(\"$path\",\"$BakName[0]\");\n";
+      close LOC;
+      system "chmod a+x \"$recover\"";
+      die if $?;
+    }
+  }
+}
+
+# Recovers an object (called by .pl script file from /.Trash)
+sub Recover{
+  my ($org,$bak) = @_;
+  $org = CleanPath($org);    # Just in case they were not clean before
+  $bak = CleanPath($bak);
+
+  # Checks that original location is free
+  die "$org was replaced" if -e $org;
+
+  # Moves the object to its original location
+  system "mv $bak $org";
+  die "mv crashed" if $?;
+  die "mv nightmare" unless -e $org;
+
+  # Welcome message
+  trace("$org recovered",1);
+}
+
+# Decides if all objects must be destroyed
+my $CrushAllObj = 0;
+
+# Move objects to ~/.Trash
+sub DelObj {
+  foreach (@_) {
+
+    # each object may be directed to a different trash directory [[file:dirloc.ph]]
+    my $trash=dirloc($_,".Trash",top=>0);
+
+    # do not use gnome trash (gvfs-trash) because it mainly useful for things that have been deleted manually
+    BackupObject($_,$trash,$CrushAllObj);
+  }
+}
+
+# Deletes objects
+sub CrushObj {
+  foreach (@_) {
+    BackupObject($_,"",1); # [[BackupObject]]
+  }
+}
+
+
+package main;
+# ALHDEBUG 17/04/23 use Devel::Peek; # for Dump($string)
+
+# Make sure to use utf8 for reading and writing all files (and even pipes)
+
+use open ':std',':encoding(utf-8)';
+
+# <<System2>> [[file:../1dex.org::System2][(i)]] version 2: %opts appears
+
+sub System2{
+  my ($cmd,%opts)=@_;
+  trace("System2 request '$cmd'",'System.ph');
+  optcheck::optcheck(\%opts,
+		     # output: output file to check for if any
+		     output=>'',
+
+		     # show: show command
+		     show=>1,
+
+		     # getout: catch command output
+		     getout=>0,
+
+		     # <<block>> [[file:../1dex.org::block][(i)]] crash if error is greater or equal to given value.
+		     block=>1,
+
+		     # <<errtype>> [[file:../1dex.org::errtype][(i)]] Check 'perl' error or 'shell' error?
+		     errtype=>"shell",
+		     
+		     # dryrun: show command but don't run it
+		     dryrun=>0,
+
+		     # reference to error variable if needed
+		     error=>0
+		    );
+
+  trace('','System.ph');
+  
+  my ($package,$file,$line)=caller;
+
+  trace('','System.ph');
+  
+  # Affiche la commande si demandé
+
+  sysmsg2($file,$line,$cmd.($opts{dryrun}?" (not done)":""),0,0) if $opts{show}; # [[file:~/alh/bin/debug.ph::sysmsg2]]
+  return 0 if $opts{dryrun};
+
+  # Vérifie que le fichier à produire n'existe pas déjà. Sinon on peut simplement le supprimer.
+
+  DelObj($opts{output}) if defined $opts{output} && $opts{output} ne "" && -e $opts{output};
+  trace('','System.ph');
+  
+  # Exécute la commande et vérifie son code de retour.
+  my @result="";
+  my $error;
+  if ($opts{getout}) {
+    trace('','System.ph');
+  
+    # Attention: ajouter une redirection ("2>&1") change le code d'erreur.
+
+    # ALHFOSSILE 30/03/20 14:58:03 open(my $cmdin,"-|:utf8",$cmd);
+    open(my $cmdin,"-|:encoding(utf-8)",$cmd);
+    trace('','System.ph');
+    @result=<$cmdin>;
+    trace('','System.ph');
+    close($cmdin);
+
+    trace('','System.ph');
+    
+    # ALH 29/03/20 run3 seems to handle utf8 in the command better than open()
+
+    # ALHFOSSILE 29/03/20 19:06:10 not multithreaded? run3 $cmd,undef,\@result,\@result;
+    
+    $error=$?;
+    print @result if $opts{show};
+
+    trace('','System.ph');
+  }
+
+  else {
+    system $cmd;
+    $error=$?;
+  }
+
+  trace('','System.ph');
+  
+  # Le code de retour habituel des commandes unix est décomposé en deux octets distincts en Perl (avec ou sans signal).
+  my $SystemError=$error;
+  my $shellerror=$error >> 8;
+
+  if($error!=0){
+
+    # ALHFOSSILE 29/03/20 16:17:20 
+    #push @result,sysmsgstring($file,$line,"problem running \"$cmd\""); # [[file:debug.ph::sysmsgstring]]
+
+    # when !$opts{show}, error messages should not be printed because batchalh may want to keep quiet. this can stop the program with
+    # $opts{block} [[file:debug.ph::sysmsg2]]
+
+    sysmsg2($file,$line,"problem running \"$cmd\" (perl $SystemError, shell $shellerror)",
+	    $error?1:0,
+	    ($opts{block}!=0
+	     && (($opts{errtype} eq 'shell' && $shellerror>=$opts{block})
+		 || ($opts{errtype} eq 'perl' && $SystemError>=$opts{block})))?1:0
+	   )
+      if $opts{show} || $opts{block};
+  }
+
+  # Vérifie que la sortie attendue a bien été produite.
+  if(defined $opts{output} && $opts{output} ne "" && ! -e $opts{output}){
+    sysmsg2($file,$line,"System.ph: \"$cmd\" n'a pas produit \"$opts{output}\"",1,$opts{block});
+  }
+
+  # store error separately if requested
+
+  my $e;
+  if($opts{errtype} eq 'shell'){$e=$shellerror}
+  if($opts{errtype} eq 'perl'){$e=$SystemError}
+  if($opts{error}){${$opts{error}}=$e}
+
+  trace('System2 finished','System.ph');
+  
+  # keep the error as the first item in the result array because the construct if(System2(...)) is nice and clean
+
+  return ($e,@result);
+}
+
+# <<backquote2>> [[file:../1dex.org::backquote2][(i)]]
+
+# in version 1, last newline is removed
+# in version 2, %opts appears
+sub backquote2{
+  my ($cmd,%opts)=@_;
+  trace("backquote2() request '$cmd'",'System.ph');
+  optcheck::optcheck(\%opts,
+		     # show: view command as it is run
+		     show=>0,
+
+		     # block: crash if error is greater or equal to given value.
+		     block=>1,
+
+		     # onestring: output a single string made of multiple lines instead of an array
+		     onestring=>1,
+
+		     # chomped: run chomp on output
+		     chomped=>1,
+
+		     # nolf: remove all line-returns from the output (one-string output mode only)
+		     nolf=>0,
+
+		     # dryrun: show command but don't run it
+		     dryrun=>0,
+
+		     # error variable if needed
+		     error=>0
+		    );
+
+  my($error,@out)=System2($cmd,
+			  show=>$opts{show},
+			  getout=>1,
+			  block=>$opts{block},
+			  dryrun=>$opts{dryrun},
+			  error=>$opts{error});
+  trace('','System.ph');
+
+  # dummy result if the command was not issued
+  if($opts{dryrun}){return "dryrun"}
+
+  trace('','System.ph');
+  
+  # raw array output
+  unless($opts{onestring}){
+    chomp @out if $opts{chomped};
+    return @out;
+  }
+
+  trace('','System.ph');
+
+  # remove last newline so that there is no newline left if there is only one line
+  if($opts{chomped} && $#out>=0){chomp $out[$#out]}
+
+  trace('','System.ph');
+
+  my $out=join('',@out);
+  if($opts{nolf}){$out=~s/\n/ /g;}
+
+  trace('backquote2 finished','System.ph');
+  return $out;
+}
+
+# <<procstack>> [[file:../1dex.org::procstack][(i)]] print process stack
+
+sub procstack{
+  my %parent;
+  my %args;
+  my $r;
+  foreach(backquote2("ps -aeo pid,ppid,args",onestring=>0)){
+    /^ *(\d+) +(\d+) +(.*)$/ or next;
+    $parent{$1}=$2;
+    $args{$1}=$3;
+  }
+  my $pid=$$;
+  my $n=0;
+  while($pid!=1 && $n<10){
+    $r.="$pid $parent{$pid} $args{$pid}\n";
+    $pid=$parent{$pid};
+    $n++;
+  }
+
+  return $r;
+}
+
+# <<ReturnCode>> only returns the error code of a command
+
+sub ReturnCode{
+  my ($cmd,%opts)=@_;
+  optcheck::optcheck(\%opts,
+		     # output: output file to check for if any
+		     output=>'',
+
+		     # show: show command
+		     show=>1,
+
+		     # <<errtype>> [[file:../1dex.org::errtype][(i)]] Check 'perl' error or 'shell' error?
+		     errtype=>"shell",
+
+		     # <<reverse>> [[file:../1dex.org::reverse][(i)]] reverse the returned value from true to false
+		     reverse=>0,
+		     
+		     # dryrun: show command but don't run it
+		     dryrun=>0
+		    );
+
+  my $e=0;
+  System2($cmd,output=>$opts{output},show=>$opts{show},block=>0,dryrun=>$opts{dryrun},errtype=>$opts{errtype},error=>\$e);
+
+  if($opts{reverse}){
+    if($e==0){$e=1}
+    else{$e=0}
+  }
+  
+  return $e;
+}
+
+
+
+# there is an lndir in xutils-dev but it does not come with many options
+
+# [[file:~/alh/bin/parm.ph]]
+
+use Encode::Locale qw(decode_argv);
+
+package parm;
+
+use Text::Wrap;
+
+# Example use:
+#
+# require 'parm.ph';
+# parm::init(1,$0,"");
+# parm::add('[[{b}]]',0,0,'',0,"boolean parameter");
+# parm::add('[[{d}]]',1,'default','.*',0,"data value");
+# parm::scan();
+#
+# Results in $parm::opts{x} and @parm::args
+
+# <<opts>>- [[file:../1dex.org::opts][(i)]] simple hash access to values
+our %opts;
+
+# <<name>>- [[file:../1dex.org::name][(i)]] La liste des parametres connus
+my @names;
+
+# Est-ce qu'un parametre est accompagne d'une valeur?
+my %valued;
+
+# Une regexp détaillant tous les paramètres autorisés (ou rien pour autoriser toute valeur).
+my %values;
+
+# Un paramètre est-il obligatoire? Suivi de la liste des paramètres présents explicitement.
+my %required;
+my %present;
+
+# L'explication en clair de la signification d'un parametre
+my %help;
+
+# <<args>>- [[file:../1dex.org::args][(i)]] Les arguments qui n'ont pas ete reconnus comme des parametres
+our @args;
+
+# "Strict" interdit les parametres non reconnus
+my $strict;
+
+# La syntaxe d'appel du programme perl (pour l'affichage de l'aide)
+my $syntax;
+
+# La description du programme perl qui utilise les options analysees ici (pour l'affichage de l'aide).
+my $description;
+
+# <<init>>=
+
+sub init{
+
+  # $strict = les arguments non cités comme options ne sont pas autorisés
+  # $syntax = syntaxe des paramètres de la commande
+  # $description = description textuelle de la commande
+
+  ($strict,$syntax,$description)=@_;
+
+  # default options.
+
+  add('n',0,0,'',0,"dry run"); # <<n>> [[file:../1dex.org::n][(i)]]
+  add('v',0,0,'',0,"verbose"); # <<v>> [[file:../1dex.org::v][(i)]]
+  add('vv',0,0,'',0,"very verbose"); # <<vv>> [[file:../1dex.org::vv][(i)]]
+  add('vvv',0,0,'',0,"extra verbose"); # <<vvv>> [[file:../1dex.org::vvv][(i)]]
+}
+
+# <<add>>- [[file:../1dex.org::add][(i)]] Ajoute un parametre possible
+sub add{
+
+  # $name = texte représentant l'option
+  # $valued = est-ce qu'une valeur suit l'option (0/1)
+  # $default = valeur par défaut (peut être "")
+  # $values = regexp représentant toutes les valeurs autorisées
+  # $required = la présence de l'option est-elle obligatoire? (0/1)
+  # $help = texte d'aide, sans découpage en lignes
+
+  my ($name,$valued,$default,$values,$required,$help)=@_;
+
+  # $name can be surrounded by <<>> or [[]] or [[{}]] to allow for a quick definition of the options in any script
+
+  $name=~s/^<\<(.*)>>$/$1/;
+  $name=~s/^\[\[\{(.*)\}\]\]$/$1/;
+  $name=~s/^\[\[(.*)\]\]$/$1/;
+
+  # Verifie qu'on ne reutilise pas une option deja connue
+
+  if($name eq "help" || defined $valued{$name}){
+
+    # always print a stack trace to know which script failed
+    $ENV{ALHDEBUG}='yes';
+
+    main::crash("Parameter '$name' already defined");
+  }
+
+  push @names,$name;
+  $valued{$name}=$valued;
+  $opts{$name}=$default;
+  $values{$name}=$values;
+  $required{$name}=$required;
+  $help{$name}=$help;
+}
+
+# Analyse une liste d'arguments
+sub scan{
+  main::trace();
+
+  # Note si on a rencontré l'option "--", qui marque la fin des options et accepte tous les arguments suivants dans @ARGV sans contrôle.
+  
+  my $optend=0;
+
+  # ALHFOSSILE 26/04/24 
+  # # Default values
+  # if(defined $ENV{ALHDEBUG}){ # [[file:alhsetup.ph::ALHDEBUG][_ALHDEBUG_]]
+  #   $opts{v}=1;
+  #   $opts{vv}=1;
+  #   $opts{vvv}=1;
+  # }
+  
+  # Boucle sur tous les arguments
+
+  Encode::Locale::decode_argv();
+  my $a=0;
+  while($a<=$#ARGV){
+    my $name=$ARGV[$a];
+    main::trace("scan(): argument $a is '$name'");
+
+    # L'option "-help" est speciale.
+    Help("") if $name eq "help";
+
+    # L'option "--" indique la fin des options
+
+    if (!$optend && $name eq '--') {
+      main::trace("scan(): '$name' => no more options");
+      $optend=1;
+      $a++;
+      next;
+    }
+
+    # Cherche a reconnaitre un parametre
+
+    my $p=0;
+    my $found=0;
+    if(!$optend){
+      while(!$found && $p<@names){
+	$found=$name eq "-$names[$p]";
+	$p++ if !$found;
+      }
+    }
+
+    # Si on a reconnu un parametre, on note sa valeur et on passe au suivant.
+
+    if(!$optend && $found){
+
+      # remove dash
+      $name=$names[$p];
+
+      if($valued{$name}){
+	Help("Premature end of list of arguments") if $a>=$#ARGV;
+	$opts{$name}=$ARGV[$a+1];
+	$a+=2;
+      } else {
+	$opts{$name}=1;
+	$a++;
+
+	# ALHFOSSILE 26/04/24 
+	# # "v" parameter extends to "vv" and "vvv"
+	# if($name eq 'vvv'){$opts{v}=1;$opts{vv}=1}
+	# if($name eq 'vv'){$opts{v}=1}
+      }
+
+      # Note qu'une valeur du paramètre a bien été trouvée
+      
+      $present{$name}=1;
+
+      # Vérifie que la valeur du paramètre est autorisée
+      
+      Help("Value \"$opts{$name}\" not allowed for \"$name\"")
+	if $values{$name} ne "" && $opts{$name}!~$values{$name};
+    }
+    else{
+
+      # some checks
+      Help("No standalone arguments like \"$name\" allowed") if $strict;
+
+      # Les arguments qui commencent par un '-' ne sont autorisés qu'après un '--'
+      Help("\"$name\" not recognised as an option") if $name=~/^-/ && !$optend;
+
+      main::trace("scan(): '$name' stored in args");
+      push @args,$name;
+      $a++;
+    }
+  }
+
+  # Vérifie que tous les paramètres obligatoires sont bien là
+
+  foreach my $name(@names){
+    Help("Parameter '$name' required") if $required{$name} && !defined($present{$name});
+  }
+
+  main::trace();
+}
+
+# Fonction d'aide
+
+sub Help{
+  my ($msg)=@_;
+
+  # La valeur actuelle de toutes les options
+
+  print "\nCurrent parameter values: ",list2(1),"\n";
+  
+  # La description de la commande
+  print "\nSyntaxe: ",$0," $syntax\n\n";
+  print wrap("","",$description),"\n";
+
+  # La description des paramètres de la commande
+  for (my $a=0;$a < @names;$a++) {
+    my $name=$names[$a];
+    print "\n-$name";
+    if ($valued{$name}) {
+      print " <$values{$name}>";
+      print " (valeur actuelle \"$opts{$name}\")";
+    }
+    print " (requis)" if $required{$name};
+    print "\n",wrap("\t","\t",$help{$name}),"\n";
+  }
+
+  # Paramètres toujours présents
+  print "\n--\n";
+  print wrap("\t","\t","Fin explicite de la liste des options"),"\n";
+  print "\n-help\n";
+  print "\tAffiche les options autorisees et leur explication.\n\n";
+
+  # Message d'erreur qui a provoqué l'affichage de l'aide, s'il y en a un.
+
+  return if $msg eq 'continue';
+  main::crash("Erreur: $msg") if $msg ne '';
+}
+
+# <<list2>> [[file:../1dex.org::list2][(i)]] create a new command line with the current value of all arguments (the first version did not include command-line arguments).
+
+sub list2{
+  my ($withargs)=@_;
+  my $line;
+  for (my $a=0;$a < @names;$a++) {
+    $line.=" ".reuse($names[$a]);
+  }
+
+  if($withargs){
+    foreach(@args){$line.=" $_"}
+  }
+  
+  return $line;
+}
+
+# <<reuse>> [[file:../1dex.org::reuse][(i)]] reuse an option value as a command line argument
+
+sub reuse{
+  my($name)=@_;
+  my $r='';
+  if($valued{$name} && $opts{$name} ne ''){
+    $r=" -$name '$opts{$name}'";
+  }
+  else{
+
+    # boolean options do not appear if they are false
+    if($opts{$name}){$r=" -$name"}
+  }
+  return $r;
+}
+
+
+parm::init(1,$0,"lndiralh (always uses the current directory and creates a single subdirectory");
+parm::add('[[{ignore}]]',1,'','.*',0,"list of files to ignore as comma-separated regexps");
+parm::add('[[{to}]]',1,'','.*',0,"name of directory of links to create");
+parm::scan();
+
+my @ignore=split(/,/,$parm::opts{ignore});
+trace("ignores are: ".join(" ",@ignore),$parm::opts{v});
+
+if(! -d $parm::opts{to}){
+  System2("mkdir $parm::opts{to}");
+}
+
+foreach my $f(backquote2("find .",onestring=>0)){
+  
+  # some files are always ignored
+  if($f eq '.'){next}
+  if($f=~/^\.\/$parm::opts{to}($|\/)/){next}
+  if($f=~/~($|\/)/){next}
+  
+  $f=~s/^\.\///;
+  
+  # ignores
+  my $i=0;
+  foreach(@ignore){
+    if($f=~/$_/){$i=1;last}
+  }
+  if($i==1){next}
+
+  trace($f,$parm::opts{v});
+  
+  # need to recreate directories to contain the softlinks
+  
+  if(-d $f && !-d "$parm::opts{to}/$f"){System2("mkdir $parm::opts{to}/$f")}
+	    
+  my $d=GetDirName($f); # [[file:path.ph::GetDirName]]
+  my $b=GetBaseName($f);
+  
+  # relative path out of the destination directory
+  
+  my $r=$d;
+  if($r eq '.'){$r=''}
+  else{
+    $r=~s/[^\/]+/../g;
+    $r="$r/";
+    trace("d=$d r=$r",$parm::opts{v});
+  }
+  
+  my $destdir=$parm::opts{to}."/".$d;
+
+  # ln could crash if a file exists where it wants to put a link.  But if anything already exists, it is very likely to be a built file,
+  # so just forget about it.
+  
+  if(! -e "$destdir/$b" && ! -l "$destdir/$b"){
+    System2("cd $destdir && ln -s $r../$f $b",show=>$parm::opts{v});
+  }
+}
+

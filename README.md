@@ -23,7 +23,7 @@
 
 <!-- [[https://docs.github.com/fr/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax]] -->
 
-## Numerical libraries package for [FreeFEM-cs](https://www.ljll.fr/lehyaric/ffcs)
+## Numerical libraries package for [FreeFEM](https://www.freefem.org)
 
 ***Version 24.1***
 
@@ -61,10 +61,13 @@ Building the default (native) binary version (result in `bin_default/libfflib.a`
 make -j binary
 ```
 
-Creating binaries for any architecture (result in `bin_[arch]/libfflib.a`) (please refer to the [ffjs](https://www.ljll.fr/lehyaric/ffjs) project for Javascript configuration):
+Creating binaries for any architecture (result in `bin_[arch]/libfflib.a`):
+
 ```
 make -j BINTAG=[arch] BINGOAL=all
 ```
+
+Please refer to the [ffjs](https://www.ljll.fr/lehyaric/ffjs) project for Javascript configuration.
 
 All usual make variables (CXX, CXXFLAGS, etc) are available.
 
